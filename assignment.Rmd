@@ -1,15 +1,20 @@
 ---
 title: "Weather and Corn Yield Regressions"
-author: "Nathan Mueller"
-date: "2/25/2022"
-output: html_document
+author: "Mary Dixon"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
-library(R.matlab)
-library(rnassqs)
+library(R.matlab) #pull in matlab file
+library(rnassqs) #access to USDA NAS quick stats api, download data from USDA directly into R
+library(ggthemes)
 ```
 
 ## Weather Data Analysis
@@ -36,10 +41,13 @@ ggplot() +
 
 
 ```
+
+
 ```{r tidying up}
 
 # assign dimension names to tmax matrix
 dimnames(prism$tmaxdaily.iowa) <- list(prism$COUNTYFP, 1:366, prism$years)
+#wants a list corresponding to different dimensions - first dim is county code (FP code)
 
 # converted 3d matrix into a data frame
 tmaxdf <- as.data.frame.table(prism$tmaxdaily.iowa)
@@ -54,7 +62,7 @@ tmaxdf <- tibble(tmaxdf)
 
 ### Summer temperature trends: Winneshiek County
 
-```{r temp trends}
+```{r temp trends, warning=F}
 
 tmaxdf$doy <- as.numeric(tmaxdf$doy)
 tmaxdf$year <- as.numeric(as.character(tmaxdf$year))
@@ -77,7 +85,7 @@ summary(lm_summertmax)
 
 ### Winter Temperatures - Winneshiek County
 
-```{r winter temps}
+```{r winter temps, message = F}
 
 winnewinter <- tmaxdf %>%
   filter(countyfp==191 & doy <= 59 | doy >= 335 & !is.na(tmax)) %>%
@@ -115,10 +123,10 @@ ggplot(winnewinter) +
 
 ### Download NASS corn yield data
 
-```{r yield download}
+```{r yield download, results = 'hide'}
 
 # set our API key with NASS
-nassqs_auth(key = "...")
+nassqs_auth(key = "08EB8353-3696-30D9-96D4-839C4DEA18B4")
 
 # parameters to query on 
 params <- list(commodity_desc = "CORN", util_practice_desc = "GRAIN", prodn_practice_desc = "ALL PRODUCTION PRACTICES", year__GE = 1981, state_alpha = "IA")
@@ -140,16 +148,285 @@ cornyields <- tibble(cornyields)
 
 ### Question 1a: Extract Winneshiek County corn yields, fit a linear time trend, make a plot. Is there a significant time trend?
 
+```{r, message = F, warning = F}
+winnecorn <- cornyields %>%
+  filter(county_ansi==191)
+
+ggplot(winnecorn, mapping = aes(x = year, y = yield)) +
+  geom_point() +
+  labs(x = "Year", y = "Yield (bu/acre)", title = "Winneshiek Corn Yield over Time") +
+  geom_smooth(method = lm) +
+  theme_bw()
+
+lm_winnecorn <- lm(yield ~ year, winnecorn)
+summary(lm_winnecorn)
+```
+From our linear model, we can see that there is a significant time trend. The p value for the year is less than alpha = 0.05. This agrees with the graph showing the yield data following the linear model line in a positive slope. With increasing years, there is a concomitant increase in yield. 
+
 ### Question 1b: Fit a quadratic time trend (i.e., year + year^2) and make a plot. Is there evidence for slowing yield growth? 
+
+```{r, message = F, warning = F}
+winnecorn$yearsq <- winnecorn$year^2
+
+lm_winnecornquad <- lm(yield ~ year + yearsq, winnecorn)
+summary(lm_winnecornquad)
+winnecorn$fitted <- lm_winnecornquad$fitted.values
+
+ggplot(winnecorn) +
+  geom_point(mapping = aes(x = year, y = yield)) +
+  geom_line(mapping = aes(x = year, y = fitted)) +
+  theme_bw() +
+  labs(x = "Year", y = "Yield (bu/acre)", title = "Quadratic Time Trend for Corn Yield")
+
+ggplot(winnecorn) +
+  geom_point(mapping = aes(x = year, y = yield)) +
+  geom_smooth(mapping = aes(x = year, y = fitted), method = lm) +
+  theme_bw() +
+  labs(x = "Year", y = "Yield (bu/acre)", title = "Quadratic Time Trend for Corn Yield")
+```
+
+There is not sufficient evidence for slowing yield growth. The year squared estimate is positive and the year is negative, indicating that yield growth is not slowing. The p values for the individual estimates are also greater than alpha = 0.05.
+
 
 ### Question 2 -- Time Series: Let's analyze the relationship between temperature and yields for the Winneshiek County time series. Use data on yield and summer avg Tmax. Is adding year or Tmax^2 to your model helpful? Make a plot and interpret the results.
 
+Combine data for yield and temperature in Winneshiek County:
+```{r, message = F, warning = F}
+summercorn <- inner_join(winnecorn,winnesummer, by = 'year')
+summercorn$meantmaxsq <- summercorn$meantmax^2
+```
+
+Make linear regression models with the different parameters of interest:
+```{r, message = F, warning = F}
+lm_summercorn_single <- lm(yield ~ meantmax, summercorn)
+summary(lm_summercorn_single)
+summercorn$fittedsingle <- lm_summercorn_single$fitted.values
+
+lm_summercorn_quad <- lm(yield ~ meantmax + meantmaxsq, summercorn)
+summary(lm_summercorn_quad)
+summercorn$fittedquad <- lm_summercorn_quad$fitted.values
+
+lm_summercorn_year <- lm(yield ~ meantmax + year, summercorn)
+summary(lm_summercorn_year)
+summercorn$fittedyear <- lm_summercorn_year$fitted.values
+
+lm_summercorn <- lm(yield ~ meantmax + year + meantmaxsq, summercorn)
+summary(lm_summercorn)
+summercorn$fitted <- lm_summercorn$fitted.values
+```
+
+Plot the linear model results
+```{r, message = F, warning = F}
+ggplot(summercorn) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_line(mapping = aes(x = meantmax, y = fittedsingle)) +
+  theme_bw() +
+  geom_smooth(mapping = aes(x = meantmax, y = fittedsingle), method = lm) +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Corn Yield and Mean Maximum Summer Temperature")
+
+ggplot(summercorn) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_line(mapping = aes(x = meantmax, y = fittedquad)) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Quadratic Temperature Trend for Corn Yield")
+
+ggplot(summercorn) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  theme_bw() +
+  geom_smooth(mapping = aes(x = meantmax, y = fittedquad), method = lm) +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Quadratic Temperature Trend for Corn Yield")
+
+ggplot(summercorn) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_smooth(mapping = aes(x = meantmax, y = fittedyear),method = lm) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Years and Max Temperature as Corn Yield Predictors")
+
+ggplot(summercorn) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_smooth(mapping = aes(x = meantmax, y = fitted),method = lm) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Years, Max Temperature, and Quadratic Temperature as Corn Yield Predictors")
+```
+
+Adding tmax^2 and year is helpful to the model. From the simple linear regression, we saw that the R-squared value is 0.03101, indicating that the mean max temperature observation only explains 3.101% of the variability in yield. When tmax^2 was added, the R-squared value increased to 0.1984. When year was added, R-sqaured increased to 0.7318. When year and tmax^2 are added, the R-squared value changed to 0.8125, indicating that 81.25% of the variation within yield is explained by all predictors. These results suggest that adding year and tmax^2 make a stronger model.  
+
+The estimate for mean max temperature squared is negative, indicating that temperature change is slowing. With increasing maximum temperature, there is a decrease in yield. With increasing years, there is an increase in corn yield.
+
+
 ### Question 3 -- Cross-Section: Analyze the relationship between temperature and yield across all counties in 2018. Is there a relationship? Interpret the results.
+
+Select data from 2018 and combine yield and temperature data:
+```{r, message = F, warning = F}
+yield <- cornyieldsall %>% 
+  filter(year == 2018) %>% 
+  group_by(county_name) %>% 
+  unique() %>% 
+  filter(!is.na(county_ansi))
+
+temp <- tmaxdf %>%
+  group_by(countyfp) %>%
+  filter(year == 2018) %>% 
+  filter(doy >= 152 & doy <= 243) %>%
+  summarize(meantmax = mean(tmax)) %>% 
+  rename(county_ansi = "countyfp")
+
+temp$county_ansi <- as.numeric(as.character(temp$county_ansi))
+
+summeryield <- left_join(yield, temp, by='county_ansi') %>%
+  select(., county_ansi, county_name, yield, meantmax)
+```
+
+Fit a simple and multiple regression model:
+```{r, message = F, warning = F}
+lm_summeryield <- lm(yield ~ meantmax, summeryield)
+summary(lm_summeryield)
+
+summeryield$meantmaxsq <- summeryield$meantmax^2
+lm_summeryield_quad <- lm(yield ~ meantmax + meantmaxsq, summeryield)
+summary(lm_summeryield_quad)
+summeryield$fitted <- lm_summeryield_quad$fitted.values
+```
+
+Plot results of models:
+```{r, message = F, warning = F}
+ggplot(summeryield, mapping = aes(x = meantmax, y = yield)) +
+  geom_point() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Corn Yield and Mean Maximum Summer Temperature in 2018") +
+  geom_smooth(method = lm) +
+  theme_bw()
+
+ggplot(summeryield) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_line(mapping = aes(x = meantmax, y = fitted)) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Quadratic Temperature Trend for Corn Yield in 2018")
+
+ggplot(summeryield) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_smooth(mapping = aes(x = meantmax, y = fitted), method = lm) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Quadratic Temperature Trend for Corn Yield in 2018")
+```
+
+From the graph of temperature and yield across all counties, we can see that there is a slight negative progression among the data. As temperature increases, yield decreases.  
+
+The estimate from the simple linear model is negative, which supports the illustration in the graph. However, the p value from the simple linear regression is greater than alpha = 0.05, so we do not have sufficient evidence to conclude that there is a relationship. 
+
+When mean temp max squared was added as an estimate in the model, the significance of the temperature predictors changed to less than alpha = 0.05. We can conclude from this model with temp and temp^2 as predictors, that there is a relationship between temperature and yield. 
+
 
 ### Question 4 -- Panel: One way to leverage multiple time series is to group all data into what is called a "panel" regression. Convert the county ID code ("countyfp" or "county_ansi") into factor using as.factor, then include this variable in a regression using all counties' yield and summer temperature data. How does the significance of your temperature coefficients (Tmax, Tmax^2) change? Make a plot comparing actual and fitted yields and interpret the results of your model.
 
-### Question 5 -- Soybeans: Download NASS data on soybean yields and explore either a time series relationship for a given county, the cross-sectional relationship for a given year, or a panel across all counties and years.
+Convert county ID into factor and join temperature and yield data:
+```{r, message = F, warning = F}
+yieldall <- cornyieldsall %>% 
+  group_by(county_name) %>% 
+  unique() %>% 
+  filter(!is.na(county_ansi))
 
-### Bonus: Find a package to make a county map of Iowa displaying some sort of information about yields or weather. Interpret your map.
+tempall <- tmaxdf %>%
+  group_by(countyfp) %>%
+  filter(doy >= 152 & doy <= 243) %>%
+  summarize(meantmax = mean(tmax)) %>% 
+  rename(county_ansi = "countyfp")
 
-### Bonus #2: Challenge question - map trends in corn yields by county across Iowa. Interpret your map.
+tempall$county_ansi <- as.numeric(as.character(tempall$county_ansi))
+
+summeryieldall <- left_join(yieldall, tempall, by='county_ansi') %>%
+  select(., county_ansi, county_name, yield, meantmax, year)
+
+summeryieldall$county_ansi <- as.factor(summeryieldall$county_ansi)
+```
+
+Run simple and multiple regression models:
+```{r, message = F, warning = F}
+summeryieldall$meantmaxsq <- summeryieldall$meantmax^2
+
+lm_summeryieldall <- lm(yield ~ meantmax + meantmaxsq, summeryieldall)
+summary(lm_summeryieldall)
+
+lm_summeryield_panel <- lm(yield ~ meantmax + meantmaxsq + county_ansi, summeryieldall)
+summary(lm_summeryield_panel)
+
+summeryieldall$fitted <- lm_summeryield_panel$fitted.values
+```
+
+Plot actual and fitted yields:
+```{r, message = F, warning = F}
+ggplot(summeryieldall) +
+  geom_point(mapping = aes(x = yield, y = fitted)) +
+  geom_smooth(mapping = aes(x = yield, y = fitted),method = lm) +
+  theme_few() +
+  labs(x = "Actual Yield", y = "Fitted Yield", title = "Fitted Versus Actual Corn Yields For Summer")
+```
+
+Our panel regression model has an adjusted R-squared value of 0.08245, so only 8.245% of the variation within yield is explained by predictors. The mean max temperature and mean max temperature squared have p values greater than alpha = 0.05, so we do not have sufficient evidence to conclude that there is a relationship between these temperature values and corresponding yield. 
+
+The significance of the temperature coefficients changed when we added the county ansi to the model. When the linear model included mean max temperature and mean max temperature squared, the p values were less than alpha = 0.05, indicating statistical significance. When county ansi was added, the p values for the temperature coefficients increased to greater than alpha = 0.05, indicating a lack of statistical significance.
+
+### Question 5 -- Soybeans: Download NASS data on soybean yields and explore either a time series relationship for a given county, the **cross-sectional relationship for a given year**, or a panel across all counties and years.
+
+Download soybean data:
+```{r message = F, warning = F, results='hide'}
+soybeanparams <- list(commodity_desc = "SOYBEANS", statisticcat_desc= "YIELD", prodn_practice_desc = "ALL PRODUCTION PRACTICES", year__GE = 1981, state_alpha = "IA")
+
+soyall <- nassqs_yields(soybeanparams)
+
+soyall$county_ansi <- as.numeric(soyall$county_ansi)
+soyall$yield <- as.numeric(soyall$Value)
+
+soyyield <- select(soyall, county_ansi, county_name, yield, year) %>%
+  filter(!is.na(county_ansi) & !is.na(yield))
+soyyield <- tibble(soyyield)
+```
+
+Cross-sectional relationship of soybean yield and mean summer max temperature for the year 2015:
+```{r message = F, warning = F}
+soyyield2015 <- soyall %>% 
+  filter(year == 2015) %>% 
+  group_by(county_name) %>% 
+  unique() %>% 
+  filter(!is.na(county_ansi))
+
+soytemp2015 <- tmaxdf %>%
+  group_by(countyfp) %>%
+  filter(year == 2015) %>% 
+  filter(doy >= 152 & doy <= 243) %>%
+  summarize(meantmax = mean(tmax)) %>% 
+  rename(county_ansi = "countyfp")
+soytemp2015$county_ansi <- as.numeric(as.character(soytemp2015$county_ansi))
+
+soy2015 <- left_join(soyyield2015, soytemp2015, by='county_ansi') %>%
+  select(., county_ansi, county_name, yield, meantmax)
+
+lm_soyyield <- lm(yield ~ meantmax, soy2015)
+summary(lm_soyyield)
+
+soy2015$meantmaxsq <- soy2015$meantmax^2
+lm_soy2015_quad <- lm(yield ~ meantmax + meantmaxsq, soy2015)
+summary(lm_soy2015_quad)
+soy2015$fitted <- lm_soy2015_quad$fitted.values
+
+ggplot(soy2015, mapping = aes(x = meantmax, y = yield)) +
+  geom_point() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Soybean Yield and Mean Maximum Summer Temperature") +
+  geom_smooth(method = lm) +
+  theme_bw()
+
+ggplot(soy2015) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_line(mapping = aes(x = meantmax, y = fitted)) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Soybean Yield and Quadratic Trend of Mean Maximum Summer Temperature")
+
+ggplot(soy2015) +
+  geom_point(mapping = aes(x = meantmax, y = yield)) +
+  geom_smooth(mapping = aes(x = meantmax, y = fitted), method = lm) +
+  theme_bw() +
+  labs(x = "Mean Max Temperature (°C)", y = "Yield (bu/acre)", title = "Soybean Yield and Quadratic Trend of Mean Maximum Summer Temperature")
+```
+
+A simple linear regression of mean summer temperature and yield gives an R-squared value of 0.3348. We get a negative estimate of mean max summer temperature, indicating that as mean temperature decreases, yield increases. This finding is supported by the graph showing the relationship between yield and mean max temperature. This graph shows the data moving along a negative slope. The p value for the mean max temperature estimate is less than alpha = 0.05, suggesting we have enough evidence to claim a relationship between the predictor and yield.  
+
+However, when we add mean max summer temperature squared to the model, the p value changes for each predictor to be greater than alpha = 0.05, so we cannot claim to have sufficient evidence to reject the null hypothesis using this model. 
